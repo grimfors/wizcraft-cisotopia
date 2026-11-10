@@ -1,5 +1,11 @@
 ---
-# ConfigMap
+# GKE re-target of the shipped frontend manifest. Diffs from upstream:
+#   - Service type NodePort (was ClusterIP) -- the GCE Ingress load-balances to node ports.
+#   - image is the us-central1-docker.pkg.dev/p-5xsmzvkzytoz-0/wizcraft-app-ece1c8/wiztopia-toystore@sha256:62cedcf219941f4513bd6d33a9b223fa4553f184b18284d2e25303f4d9382242 tag the LEARNER builds, scans and pushes in challenge 2; setup
+#     renders the registry path but never builds it, so the digest that ends up running is the
+#     learner's. This is the vulnerable image (next 16.0.6) the admission gate blocks in challenge 3.
+# The elevated ClusterRole/binding is kept verbatim from the app: it is a real over-privileged RBAC
+# artifact the app ships, not a track invention.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -9,7 +15,6 @@ data:
   PORT: "3000"
 
 ---
-# Frontend
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,7 +33,7 @@ spec:
       serviceAccountName: wiztopia-db-sa
       containers:
       - name: wiztopia-toystore
-        image: "placeholder"
+        image: "us-central1-docker.pkg.dev/p-5xsmzvkzytoz-0/wizcraft-app-ece1c8/wiztopia-toystore@sha256:62cedcf219941f4513bd6d33a9b223fa4553f184b18284d2e25303f4d9382242"
         imagePullPolicy: Always
         ports:
         - containerPort: 3000
@@ -53,7 +58,7 @@ metadata:
   name: wiztopia-toystore
   namespace: wiztopia
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
   - port: 80
     targetPort: 3000
@@ -62,7 +67,6 @@ spec:
     app: wiztopia-toystore
 
 ---
-# High Privilege Role and Binding
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

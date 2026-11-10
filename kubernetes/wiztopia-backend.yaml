@@ -1,5 +1,15 @@
 ---
-# Namespace
+# GKE re-target of the shipped AWS/EKS backend manifest. setup renders the __TOKENS__ and writes this
+# over the app clone's kubernetes/wiztopia-backend.yaml. Diffs from upstream, each load-bearing:
+#   - DATABASE_CLIENT: sqlite3 (was "pg") -- knex falls back to a file-backed sqlite3 db when the
+#     client is not pg, so the readiness probe (/products/toys -> a knex query) returns 200 with no
+#     external database. With "pg" + a placeholder DATABASE_URL the query throws and the pods never
+#     become Ready, which would fail challenge 2's "workloads healthy" leg.
+#   - ServiceAccount annotation iam.gke.io/gcp-service-account (was eks.amazonaws.com/role-arn) -- the
+#     GKE Workload Identity binding that replaces the AWS IRSA annotation; the GSA is bound to this KSA
+#     in terraform/scenario.
+#   - Service type NodePort (was ClusterIP) -- the GCE Ingress in wiztopia-exposure.yaml load-balances
+#     to node ports.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -8,7 +18,6 @@ metadata:
     name: wiztopia
 
 ---
-# ConfigMaps
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -17,7 +26,8 @@ metadata:
 data:
   PORT: "4000"
   NODE_ENV: "production"
-  DATABASE_CLIENT: "pg"
+  # sqlite3 fallback: no external DB, so the readiness probe's knex query succeeds in-pod.
+  DATABASE_CLIENT: "sqlite3"
   DB_POOL_MIN: "2"
   DB_POOL_MAX: "10"
   REDIS_SESSION_URL: "redis://redis-session:6379/0"
@@ -39,17 +49,17 @@ data:
     maxmemory-policy allkeys-lru
 
 ---
-# ServiceAccount for IRSA
+# The shared app ServiceAccount. The GKE Workload Identity annotation replaces the shipped AWS IRSA
+# one; terraform binds this KSA (wiztopia/wiztopia-db-sa) to the workload GSA below.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: wiztopia-db-sa
   namespace: wiztopia
   annotations:
-    eks.amazonaws.com/role-arn: "placeholder"
+    iam.gke.io/gcp-service-account: "wizcraft-app-ece1c8@p-5xsmzvkzytoz-0.iam.gserviceaccount.com"
 
 ---
-# Backend
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,15 +78,14 @@ spec:
       serviceAccountName: wiztopia-db-sa
       containers:
       - name: wiztopia-backend
-        image: "placeholder"
+        # setup pre-publishes this image and pins it by digest; challenge 2 grades that the backend
+        # runs exactly this digest.
+        image: "us-central1-docker.pkg.dev/p-5xsmzvkzytoz-0/wizcraft-app-ece1c8/wiztopia-backend@sha256:4f68dfe785422fd4d28cceaa60ef06a8e224f643ea5870f4fff9bb3e6c4bc6f9"
         ports:
         - containerPort: 4000
         envFrom:
         - configMapRef:
             name: wiztopia-backend-config
-        env:
-        - name: DATABASE_URL
-          value: "placeholder"
         resources:
           requests:
             memory: "256Mi"
@@ -86,13 +95,13 @@ spec:
             cpu: "800m"
         livenessProbe:
           httpGet:
-            path: /products/toys
+            path: /healthz
             port: 4000
           initialDelaySeconds: 30
           periodSeconds: 15
         readinessProbe:
           httpGet:
-            path: /products/toys
+            path: /healthz
             port: 4000
           initialDelaySeconds: 10
           periodSeconds: 5
@@ -104,7 +113,7 @@ metadata:
   name: wiztopia-backend
   namespace: wiztopia
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
   - port: 4000
     targetPort: 4000
@@ -112,7 +121,6 @@ spec:
     app: wiztopia-backend
 
 ---
-# Redis Session
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -160,7 +168,6 @@ spec:
     app: redis-session
 
 ---
-# Redis Cart
 apiVersion: apps/v1
 kind: Deployment
 metadata:
